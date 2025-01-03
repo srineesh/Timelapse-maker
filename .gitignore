@@ -1,4 +1,21 @@
-timelapse_images/*
+# System files
 .DS_Store
-.env/
 
+# Python virtual environment
+.venv/
+__pycache__/
+*.pyc
+
+# Project specific folders
+progress_photos/
+timelapse_images/
+timelapse_*/
+
+# Generated files
+*.mp4
+timelapsed_imgs.mp4
+
+# Log files
+*.log
+timelapse.log
+progress_photos.log
