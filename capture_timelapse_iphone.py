@@ -9,6 +9,8 @@ from datetime import datetime, timedelta
 import shutil
 import json
 import gc
+import cv2
+import numpy as np
 
 # Set up logging
 logging.basicConfig(
@@ -19,6 +21,89 @@ logging.basicConfig(
         logging.FileHandler('timelapse.log')
     ]
 )
+
+def create_progress_bar():
+    """Create a compact progress bar showing year progress"""
+    bar_width = 400
+    bar_height = 100
+    bar_img = np.zeros((bar_height, bar_width, 3), dtype=np.uint8)
+    bar_img[:] = (26, 20, 20)  # Dark background in BGR
+    
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    year_text = str(datetime.now().year)
+    font_scale = 1.0
+    thickness = 2
+    
+    text_size = cv2.getTextSize(year_text, font, font_scale, thickness)[0]
+    text_x = (bar_width - text_size[0]) // 2
+    cv2.putText(bar_img, year_text, (text_x, 30), font, font_scale, (255, 255, 255), thickness)
+
+    today = datetime.now()
+    year_start = datetime(today.year, 1, 1)
+    year_end = datetime(today.year, 12, 31)
+    days_in_year = (year_end - year_start).days + 1
+    days_completed = (today - year_start).days + 1
+    year_percentage = (days_completed / days_in_year) * 100
+
+    cv2.rectangle(bar_img, (20, 45), (bar_width - 20, 65), (40, 30, 30), -1)
+    progress_width = int((bar_width - 40) * (year_percentage / 100))
+    if progress_width > 0:
+        cv2.rectangle(bar_img, (20, 45), (20 + progress_width, 65), (255, 165, 0), -1)
+    
+    percentage_text = f"{year_percentage:.1f}%"
+    text_size = cv2.getTextSize(percentage_text, font, font_scale, thickness)[0]
+    text_x = (bar_width - text_size[0]) // 2
+    cv2.putText(bar_img, percentage_text, (text_x, 85), font, font_scale, (255, 255, 255), thickness)
+    
+    return bar_img
+
+def add_date_and_progress_overlay(frame):
+    """Add date and year progress overlay to frame"""
+    height, width = frame.shape[:2]
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    padding = 30
+    
+    now = datetime.now()
+    day = now.day
+    suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(day % 20, 'th')
+    if 11 <= day <= 13:
+        suffix = 'th'
+    date_text = now.strftime(f"%-d{suffix} %b %Y %-I:%M %p")
+    
+    (text_width, text_height), _ = cv2.getTextSize(date_text, font, 1.2, 2)
+    date_x = width - text_width - padding - 20
+    date_y = height - 200
+    
+    date_bg_x = width - text_width - padding - 40
+    date_bg_y = date_y - text_height - 10
+    
+    date_overlay = frame.copy()
+    cv2.rectangle(date_overlay,
+                 (date_bg_x, date_bg_y),
+                 (date_bg_x + text_width + 40, date_bg_y + text_height + 20),
+                 (26, 20, 20),
+                 -1)
+    frame = cv2.addWeighted(date_overlay, 0.85, frame, 0.15, 0)
+    cv2.putText(frame, date_text, (date_x, date_y), font, 1.2, (255, 255, 255), 2)
+    
+    progress_bar = create_progress_bar()
+    bar_height, bar_width = progress_bar.shape[:2]
+    x_offset = width - bar_width - padding
+    y_offset = height - bar_height - padding
+    
+    progress_overlay = frame.copy()
+    cv2.rectangle(progress_overlay,
+                 (x_offset - 10, y_offset - 10),
+                 (x_offset + bar_width + 10, y_offset + bar_height + 10),
+                 (26, 20, 20),
+                 -1)
+    frame = cv2.addWeighted(progress_overlay, 0.85, frame, 0.15, 0)
+    
+    roi = frame[y_offset:y_offset+bar_height, x_offset:x_offset+bar_width]
+    mask = np.any(progress_bar != [26, 20, 20], axis=2)
+    roi[mask] = progress_bar[mask]
+    
+    return frame
 
 class TimelapseCapture:
     def __init__(self, duration, interval, device_name):
@@ -143,13 +228,13 @@ class TimelapseCapture:
         """Capture a single frame with error handling"""
         current_time = time.time()
         
-        # Periodically verify camera is still accessible
         if current_time - self.last_camera_check >= self.camera_check_interval:
             if not self.verify_camera():
                 return False
             self.last_camera_check = current_time
         
         try:
+            # Capture warmup shot
             warmup_file = self.temp_dir / f"warmup_{frame_number}.jpg"
             subprocess.run([
                 "imagesnap",
@@ -160,12 +245,13 @@ class TimelapseCapture:
             
             time.sleep(4)
             
-            filename = self.output_dir / f"frame_{frame_number:04d}.jpg"
+            # Capture actual frame to temp file
+            temp_file = self.temp_dir / f"temp_{frame_number}.jpg"
             result = subprocess.run([
                 "imagesnap",
                 "-d", self.device_name,
                 "-w", "3.0",
-                str(filename)
+                str(temp_file)
             ], capture_output=True, text=True)
             
             if result.returncode != 0:
@@ -173,12 +259,28 @@ class TimelapseCapture:
                 logging.warning(f"Frame {frame_number} capture failed: {result.stderr}")
                 return False
             
-            if not filename.exists() or filename.stat().st_size == 0:
+            if not temp_file.exists() or temp_file.stat().st_size == 0:
                 self.failed_frames += 1
                 logging.warning(f"Frame {frame_number} may be corrupt or empty")
                 return False
-                
+            
+            # Read the frame and add overlays
+            frame = cv2.imread(str(temp_file))
+            if frame is None:
+                self.failed_frames += 1
+                logging.warning(f"Failed to read frame {frame_number}")
+                return False
+            
+            # Add date and progress bar overlay
+            frame = add_date_and_progress_overlay(frame)
+            
+            # Save final frame with overlays
+            final_file = self.output_dir / f"frame_{frame_number:04d}.jpg"
+            cv2.imwrite(str(final_file), frame)
+            
+            # Cleanup temp files
             warmup_file.unlink(missing_ok=True)
+            temp_file.unlink(missing_ok=True)
             
             logging.info(f"Captured frame {frame_number}/{self.num_frames}")
             return True
