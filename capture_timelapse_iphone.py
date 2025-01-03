@@ -11,6 +11,7 @@ import json
 import gc
 import cv2
 import numpy as np
+import os
 
 # Set up logging
 logging.basicConfig(
@@ -22,47 +23,115 @@ logging.basicConfig(
     ]
 )
 
-def create_progress_bar():
-    """Create a compact progress bar showing year progress"""
+def play_alert():
+    """Play system alert sound for 10 seconds"""
+    try:
+        start_time = time.time()
+        while time.time() - start_time < 10:
+            os.system('afplay /System/Library/Sounds/Sosumi.aiff')
+            time.sleep(1)
+    except Exception as e:
+        logging.error(f"Failed to play alert sound: {e}")
+
+def play_completion_chime():
+    """Play a pleasant chime sound to indicate session completion"""
+    try:
+        # Play Glass.aiff sound 3 times (a more pleasant sound for completion)
+        for _ in range(3):
+            os.system('afplay /System/Library/Sounds/Glass.aiff')
+            time.sleep(1)
+    except Exception as e:
+        logging.error(f"Failed to play completion chime: {e}")
+
+def format_duration(minutes):
+    """Format duration in minutes to hours and minutes string"""
+    hours = minutes // 60
+    mins = minutes % 60
+    if hours == 0:
+        return f"{mins}min"
+    elif mins == 0:
+        return f"{hours}hr"
+    else:
+        return f"{hours}hr {mins}min"
+
+def create_work_progress_bar(start_time, total_duration_hours, total_pause_duration):
+    """Create a compact progress bar showing work progress"""
+    # Basic dimensions and settings
     bar_width = 400
-    bar_height = 100
-    bar_img = np.zeros((bar_height, bar_width, 3), dtype=np.uint8)
-    bar_img[:] = (26, 20, 20)  # Dark background in BGR
+    bar_height = 120  # Increased height to accommodate more spacing
+    padding = 20
     
+    # Create base image with dark background
+    bar_img = np.zeros((bar_height, bar_width, 3), dtype=np.uint8)
+    bar_img[:] = (26, 20, 20)  # Dark background color
+    
+    # Font configuration
     font = cv2.FONT_HERSHEY_SIMPLEX
-    year_text = str(datetime.now().year)
     font_scale = 1.0
     thickness = 2
     
-    text_size = cv2.getTextSize(year_text, font, font_scale, thickness)[0]
-    text_x = (bar_width - text_size[0]) // 2
-    cv2.putText(bar_img, year_text, (text_x, 30), font, font_scale, (255, 255, 255), thickness)
-
-    today = datetime.now()
-    year_start = datetime(today.year, 1, 1)
-    year_end = datetime(today.year, 12, 31)
-    days_in_year = (year_end - year_start).days + 1
-    days_completed = (today - year_start).days + 1
-    year_percentage = (days_completed / days_in_year) * 100
-
-    cv2.rectangle(bar_img, (20, 45), (bar_width - 20, 65), (40, 30, 30), -1)
-    progress_width = int((bar_width - 40) * (year_percentage / 100))
-    if progress_width > 0:
-        cv2.rectangle(bar_img, (20, 45), (20 + progress_width, 65), (255, 165, 0), -1)
+    # Calculate time and progress
+    total_duration_seconds = total_duration_hours * 3600
+    elapsed_seconds = (datetime.now() - start_time).total_seconds() - total_pause_duration
+    elapsed_minutes = int(elapsed_seconds / 60)
+    total_minutes = int(total_duration_hours * 60)
+    work_percentage = min((elapsed_seconds / total_duration_seconds) * 100, 100)
     
-    percentage_text = f"{year_percentage:.1f}%"
+    # Position settings
+    top_text_y = 30
+    progress_bar_y = 45
+    progress_bar_height = 20
+    percentage_text_y = 105  # Increased spacing from progress bar
+    
+    # Draw duration text at top
+    progress_text = f"{format_duration(elapsed_minutes)}/{format_duration(total_minutes)}"
+    text_size = cv2.getTextSize(progress_text, font, font_scale, thickness)[0]
+    text_x = (bar_width - text_size[0]) // 2
+    cv2.putText(bar_img, 
+                progress_text, 
+                (text_x, top_text_y), 
+                font, 
+                font_scale, 
+                (255, 255, 255), 
+                thickness)
+
+    # Draw background bar (dark gray)
+    cv2.rectangle(bar_img, 
+                 (padding, progress_bar_y),
+                 (bar_width - padding, progress_bar_y + progress_bar_height),
+                 (40, 30, 30),
+                 -1)
+    
+    # Draw progress bar (orange)
+    progress_width = int((bar_width - 2 * padding) * (work_percentage / 100))
+    if progress_width > 0:
+        cv2.rectangle(bar_img,
+                     (padding, progress_bar_y),
+                     (padding + progress_width, progress_bar_y + progress_bar_height),
+                     (0, 165, 255),
+                     -1)
+    
+    # Draw percentage text with increased spacing
+    percentage_text = f"{work_percentage:.1f}%"
     text_size = cv2.getTextSize(percentage_text, font, font_scale, thickness)[0]
     text_x = (bar_width - text_size[0]) // 2
-    cv2.putText(bar_img, percentage_text, (text_x, 85), font, font_scale, (255, 255, 255), thickness)
+    cv2.putText(bar_img, 
+                percentage_text, 
+                (text_x, percentage_text_y), 
+                font, 
+                font_scale, 
+                (255, 255, 255), 
+                thickness)
     
     return bar_img
 
-def add_date_and_progress_overlay(frame):
-    """Add date and year progress overlay to frame"""
+def add_date_and_work_progress_overlay(frame, start_time, total_duration_hours, total_pause_duration):
+    """Add date and work progress overlay to frame"""
     height, width = frame.shape[:2]
     font = cv2.FONT_HERSHEY_SIMPLEX
     padding = 30
     
+    # Add date
     now = datetime.now()
     day = now.day
     suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(day % 20, 'th')
@@ -72,11 +141,12 @@ def add_date_and_progress_overlay(frame):
     
     (text_width, text_height), _ = cv2.getTextSize(date_text, font, 1.2, 2)
     date_x = width - text_width - padding - 20
-    date_y = height - 200
+    date_y = height - 50
     
     date_bg_x = width - text_width - padding - 40
     date_bg_y = date_y - text_height - 10
     
+    # Add date overlay
     date_overlay = frame.copy()
     cv2.rectangle(date_overlay,
                  (date_bg_x, date_bg_y),
@@ -86,11 +156,13 @@ def add_date_and_progress_overlay(frame):
     frame = cv2.addWeighted(date_overlay, 0.85, frame, 0.15, 0)
     cv2.putText(frame, date_text, (date_x, date_y), font, 1.2, (255, 255, 255), 2)
     
-    progress_bar = create_progress_bar()
+    # Create and position work progress bar at top right
+    progress_bar = create_work_progress_bar(start_time, total_duration_hours, total_pause_duration)
     bar_height, bar_width = progress_bar.shape[:2]
     x_offset = width - bar_width - padding
-    y_offset = height - bar_height - padding
+    y_offset = padding  # Position at top
     
+    # Add progress bar overlay
     progress_overlay = frame.copy()
     cv2.rectangle(progress_overlay,
                  (x_offset - 10, y_offset - 10),
@@ -99,6 +171,7 @@ def add_date_and_progress_overlay(frame):
                  -1)
     frame = cv2.addWeighted(progress_overlay, 0.85, frame, 0.15, 0)
     
+    # Add progress bar
     roi = frame[y_offset:y_offset+bar_height, x_offset:x_offset+bar_width]
     mask = np.any(progress_bar != [26, 20, 20], axis=2)
     roi[mask] = progress_bar[mask]
@@ -113,6 +186,7 @@ class TimelapseCapture:
         self.running = True
         self.current_frame = 1
         self.num_frames = int(duration // interval)
+        self.start_time = time.time()
         
         # Create timestamped directory
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -140,7 +214,7 @@ class TimelapseCapture:
         # Set up signal handlers
         signal.signal(signal.SIGINT, self.handle_shutdown)
         signal.signal(signal.SIGTERM, self.handle_shutdown)
-
+        
     def save_capture_info(self):
         """Save capture settings for reference"""
         info = {
@@ -199,12 +273,18 @@ class TimelapseCapture:
             )
             if self.device_name not in result.stdout:
                 logging.error("Camera not found! Please check connection.")
+                play_alert()
                 return False
             return True
         except subprocess.CalledProcessError:
             logging.error("Failed to check camera status")
+            play_alert()
             return False
 
+    def format_time(self, seconds):
+        """Format time in HH:MM:SS"""
+        return str(timedelta(seconds=int(seconds)))
+    
     def initialize_camera(self):
         """Take initial test shots to stabilize camera"""
         logging.info("Initializing camera with test shots...")
@@ -245,7 +325,7 @@ class TimelapseCapture:
             
             time.sleep(4)
             
-            # Capture actual frame to temp file
+            # Capture actual frame
             temp_file = self.temp_dir / f"temp_{frame_number}.jpg"
             result = subprocess.run([
                 "imagesnap",
@@ -264,21 +344,23 @@ class TimelapseCapture:
                 logging.warning(f"Frame {frame_number} may be corrupt or empty")
                 return False
             
-            # Read the frame and add overlays
             frame = cv2.imread(str(temp_file))
             if frame is None:
                 self.failed_frames += 1
                 logging.warning(f"Failed to read frame {frame_number}")
                 return False
             
-            # Add date and progress bar overlay
-            frame = add_date_and_progress_overlay(frame)
+            # Add overlay with work progress
+            frame = add_date_and_work_progress_overlay(
+                frame,
+                start_time=datetime.fromtimestamp(self.start_time),
+                total_duration_hours=self.duration/3600,
+                total_pause_duration=self.total_pause_duration
+            )
             
-            # Save final frame with overlays
             final_file = self.output_dir / f"frame_{frame_number:04d}.jpg"
             cv2.imwrite(str(final_file), frame)
             
-            # Cleanup temp files
             warmup_file.unlink(missing_ok=True)
             temp_file.unlink(missing_ok=True)
             
@@ -289,11 +371,7 @@ class TimelapseCapture:
             self.failed_frames += 1
             logging.error(f"Error capturing frame: {e}")
             return False
-
-    def format_time(self, seconds):
-        """Format time in HH:MM:SS"""
-        return str(timedelta(seconds=int(seconds)))
-
+        
     def run_timelapse(self):
         """Run the main timelapse capture loop"""
         logging.info(f"\nStarting timelapse capture:")
@@ -351,7 +429,7 @@ class TimelapseCapture:
                     )
                     
                     last_progress_log = current_time
-                    gc.collect()  # Clean up memory periodically
+                    gc.collect()
                     
         except Exception as e:
             logging.error(f"Unexpected error during capture: {e}")
@@ -368,7 +446,11 @@ class TimelapseCapture:
             logging.info(f"Success rate: {success_rate:.1f}%")
             logging.info(f"Total pause time: {self.format_time(self.total_pause_duration)}")
             logging.info(f"Output directory: {self.output_dir}")
-
+            
+            # Play completion chime if we completed normally (not interrupted)
+            if self.current_frame > self.num_frames:
+                play_completion_chime()
+                
 def list_cameras():
     """List available camera devices"""
     try:
